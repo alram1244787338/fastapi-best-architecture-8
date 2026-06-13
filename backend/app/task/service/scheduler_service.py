@@ -10,10 +10,16 @@ from backend.app.task.celery import celery_app
 from backend.app.task.crud.crud_scheduler import task_scheduler_dao
 from backend.app.task.enums import TaskSchedulerType
 from backend.app.task.model import TaskScheduler
-from backend.app.task.schema.scheduler import CreateTaskSchedulerParam, UpdateTaskSchedulerParam
-from backend.app.task.utils.tzcrontab import crontab_verify
+from backend.app.task.schema.scheduler import (
+    CreateTaskSchedulerParam,
+    PreviewTaskSchedulerParam,
+    PreviewTaskSchedulerResult,
+    UpdateTaskSchedulerParam,
+)
+from backend.app.task.utils.tzcrontab import crontab_next_run_times, crontab_verify, interval_next_run_times
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
+from backend.core.conf import settings
 
 
 class TaskSchedulerService:
@@ -152,6 +158,37 @@ class TaskSchedulerService:
             raise errors.RequestError(msg='执行失败，任务参数非法')
         else:
             celery_app.send_task(name=task_scheduler.task, args=args, kwargs=kwargs)
+
+    @staticmethod
+    def preview(*, obj: PreviewTaskSchedulerParam) -> PreviewTaskSchedulerResult:
+        """
+        预览任务调度未来执行时间
+
+        :param obj: 任务调度预览参数
+        :return:
+        """
+        if obj.type == TaskSchedulerType.CRONTAB:
+            next_run_times = crontab_next_run_times(obj.crontab, obj.count, start_time=obj.start_time)
+            return PreviewTaskSchedulerResult(
+                next_run_times=next_run_times,
+                count=len(next_run_times),
+                type=obj.type,
+                crontab=obj.crontab,
+                timezone=settings.DATETIME_TIMEZONE,
+            )
+        if obj.type == TaskSchedulerType.INTERVAL:
+            next_run_times = interval_next_run_times(
+                obj.interval_every, obj.interval_period, obj.count, start_time=obj.start_time
+            )
+            return PreviewTaskSchedulerResult(
+                next_run_times=next_run_times,
+                count=len(next_run_times),
+                type=obj.type,
+                interval_every=obj.interval_every,
+                interval_period=obj.interval_period,
+                timezone=settings.DATETIME_TIMEZONE,
+            )
+        raise errors.RequestError(msg='不支持的任务调度类型')
 
 
 task_scheduler_service: TaskSchedulerService = TaskSchedulerService()
