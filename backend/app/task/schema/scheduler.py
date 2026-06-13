@@ -36,6 +36,28 @@ class UpdateTaskSchedulerParam(TaskSchedulerSchemeBase):
     """更新任务调度参数"""
 
 
+class PreviewTaskSchedulerParam(SchemaBase):
+    """任务调度预览参数"""
+
+    type: TaskSchedulerType = Field(description='任务调度类型（0间隔 1定时）')
+    crontab: str = Field(default='* * * * *', description='Crontab 表达式（type=1 时必填）')
+    interval_every: int | None = Field(default=None, description='间隔周期数（type=0 时必填）')
+    interval_period: PeriodType | None = Field(default=None, description='周期类型（type=0 时必填）')
+    start_time: datetime | None = Field(default=None, description='预览起始时间，默认为当前时间')
+    count: int = Field(default=5, ge=1, le=20, description='预览未来执行次数')
+
+
+class PreviewTaskSchedulerResult(SchemaBase):
+    """任务调度预览结果"""
+
+    next_run_times: list[datetime] = Field(description='未来执行时间列表')
+    count: int = Field(description='实际返回的执行时间数量')
+    type: TaskSchedulerType = Field(description='任务调度类型')
+    crontab: str | None = Field(default=None, description='Crontab 表达式')
+    interval_every: int | None = Field(default=None, description='间隔周期数')
+    interval_period: PeriodType | None = Field(default=None, description='周期类型')
+
+
 class GetTaskSchedulerDetail(TaskSchedulerSchemeBase):
     """任务调度详情"""
 

@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, Path, Query
 from backend.app.task.schema.scheduler import (
     CreateTaskSchedulerParam,
     GetTaskSchedulerDetail,
+    PreviewTaskSchedulerParam,
+    PreviewTaskSchedulerResult,
     UpdateTaskSchedulerParam,
 )
 from backend.app.task.service.scheduler_service import task_scheduler_service
@@ -48,6 +50,16 @@ async def get_task_scheduler_paginated(
 ) -> ResponseSchemaModel[PageData[GetTaskSchedulerDetail]]:
     page_data = await task_scheduler_service.get_list(db=db, name=name, type=type)
     return response_base.success(data=page_data)
+
+
+@router.post(
+    '/preview',
+    summary='预览任务调度执行时间',
+    dependencies=[DependsJwtAuth],
+)
+async def preview_task_scheduler(obj: PreviewTaskSchedulerParam) -> ResponseSchemaModel[PreviewTaskSchedulerResult]:
+    result = task_scheduler_service.preview(obj=obj)
+    return response_base.success(data=result)
 
 
 @router.post(
