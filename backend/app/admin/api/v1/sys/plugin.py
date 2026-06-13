@@ -4,6 +4,7 @@ from fastapi import APIRouter, File, Path, UploadFile
 from fastapi.params import Query
 from starlette.responses import StreamingResponse
 
+from backend.app.admin.schema.plugin import GetPluginDetail, GetPluginPreCheck
 from backend.app.admin.service.plugin_service import plugin_service
 from backend.common.enums import PluginType
 from backend.common.response.response_code import CustomResponse
@@ -26,9 +27,31 @@ async def plugin_changed() -> ResponseSchemaModel[bool]:
 
 
 @router.post(
+    '/pre-check',
+    summary='安装前预检查',
+    description='在安装前验证插件包或仓库地址的合法性，提前发现常见问题（不会实际安装）',
+    dependencies=[DependsSuperUser],
+)
+async def pre_check_plugin(
+    type: Annotated[PluginType, Query(description='插件类型')],
+    file: Annotated[UploadFile | None, File()] = None,
+    repo_url: Annotated[str | None, Query(description='插件 git 仓库地址')] = None,
+) -> ResponseSchemaModel[GetPluginPreCheck]:
+    try:
+        plugin_name = await plugin_service.pre_check_install(type=type, file=file, repo_url=repo_url)
+    except Exception as e:
+        return response_base.success(
+            data=GetPluginPreCheck(can_install=False, plugin_name='', reason=getattr(e, 'msg', str(e))),
+        )
+    return response_base.success(
+        data=GetPluginPreCheck(can_install=True, plugin_name=plugin_name),
+    )
+
+
+@router.post(
     '',
     summary='安装插件',
-    description='使用插件 zip 压缩包或 git 仓库地址进行安装（仅开发环境）',
+    description='使用插件 zip 压缩包或 git 仓库地址进行安装（仅开发环境），安装前会自动进行合法性预检查',
     dependencies=[DependsSuperUser],
 )
 async def install_plugin(
@@ -43,6 +66,14 @@ async def install_plugin(
             msg=f'插件 {plugin_name} 安装成功，请根据插件说明（README.md）进行相关配置并重启服务',
         ),
     )
+
+
+@router.get('/{plugin}/detail', summary='获取插件详情', dependencies=[DependsSuperUser])
+async def get_plugin_detail(
+    plugin: Annotated[str, Path(description='插件名称')],
+) -> ResponseSchemaModel[GetPluginDetail]:
+    data = await plugin_service.get_detail(plugin=plugin)
+    return response_base.success(data=data)
 
 
 @router.delete(

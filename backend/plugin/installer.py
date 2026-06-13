@@ -51,7 +51,86 @@ async def _append_env_example(plugin_path: anyio.Path) -> None:
         await f.write(new_content)
 
 
-async def install_zip_plugin(file: UploadFile | str) -> str:  # noqa: C901
+def validate_zip_plugin_contents(contents: bytes, filename: str) -> tuple[str, str]:
+    """
+    校验 ZIP 插件压缩包内容合法性（不执行安装）
+
+    :param contents: 压缩包字节内容
+    :param filename: 压缩包文件名，用于解析插件名称
+    :return: (插件名称, 压缩包内插件目录名)
+    """
+    file_bytes = io.BytesIO(contents)
+    if not zipfile.is_zipfile(file_bytes):
+        raise errors.RequestError(msg='插件压缩包格式非法')
+
+    with zipfile.ZipFile(file_bytes) as zf:
+        plugin_namelist = zf.namelist()
+        if not plugin_namelist:
+            raise errors.RequestError(msg='插件压缩包内容非法')
+        plugin_dir_name = plugin_namelist[0].split('/', 1)[0].strip()
+        if not plugin_dir_name:
+            raise errors.RequestError(msg='插件压缩包内容非法')
+        required_files = ('__init__.py', 'plugin.toml', 'README.md')
+        missing_files = [name for name in required_files if f'{plugin_dir_name}/{name}' not in plugin_namelist]
+        if len(plugin_namelist) <= 3 or missing_files:
+            missing_hint = ', '.join(missing_files) or '__init__.py / plugin.toml / README.md'
+            raise errors.RequestError(msg=f'插件压缩包内缺少必要文件: {missing_hint}')
+
+    plugin_name_match = re.match(r'^([a-zA-Z0-9_]+)', filename.split(os.sep)[-1].split('.')[0].strip())
+    if not plugin_name_match:
+        raise errors.RequestError(msg='插件压缩包文件名非法')
+
+    return plugin_name_match.group(), plugin_dir_name
+
+
+def validate_git_repo_url(repo_url: str) -> str:
+    """
+    校验 Git 仓库地址合法性（不执行安装）
+
+    :param repo_url: 插件 git 仓库地址
+    :return: 解析出的插件名称
+    """
+    match = is_git_url(repo_url)
+    if not match:
+        raise errors.RequestError(msg='Git 仓库地址格式非法，仅支持 HTTP/HTTPS 协议')
+    repo_name = match.group('repo')
+    if not repo_name:
+        raise errors.RequestError(msg='无法从 Git 仓库地址解析出插件名称')
+    return repo_name
+
+
+def _collect_zip_plugin_members(zf: zipfile.ZipFile, plugin_dir_name: str) -> list[zipfile.ZipInfo]:
+    """
+    收集 ZIP 插件压缩包内需要解压的成员，并将文件名重写为相对插件目录路径
+
+    :param zf: 已打开的压缩包对象
+    :param plugin_dir_name: 压缩包内插件目录名
+    :return:
+    """
+    members = []
+    prefix = f'{plugin_dir_name}/'
+    for member in zf.infolist():
+        if member.filename in {plugin_dir_name, prefix}:
+            continue
+        if not member.filename.startswith(prefix):
+            continue
+
+        relative_filename = member.filename.removeprefix(prefix)
+        if not relative_filename:
+            if member.is_dir():
+                continue
+            raise errors.RequestError(msg='插件压缩包内容非法')
+
+        member.filename = relative_filename
+        members.append(member)
+
+    if not members:
+        raise errors.RequestError(msg='插件压缩包内容非法')
+
+    return members
+
+
+async def install_zip_plugin(file: UploadFile | str) -> str:
     """
     安装 ZIP 插件
 
@@ -61,63 +140,22 @@ async def install_zip_plugin(file: UploadFile | str) -> str:  # noqa: C901
     if isinstance(file, str):
         async with await open_file(file, mode='rb') as fb:
             contents = await fb.read()
+        filename = file
     else:
         contents = await file.read()
-    file_bytes = io.BytesIO(contents)
-    if not zipfile.is_zipfile(file_bytes):
-        raise errors.RequestError(msg='插件压缩包格式非法')
+        filename = file.filename or ''
+
+    # 安装前合法性预检查，避免解压后才发现问题
+    plugin_name, plugin_dir_name = validate_zip_plugin_contents(contents, filename)
 
     async with acquire_distributed_reload_lock():
-        with zipfile.ZipFile(file_bytes) as zf:
-            # 校验压缩包
-            plugin_namelist = zf.namelist()
-            if not plugin_namelist:
-                raise errors.RequestError(msg='插件压缩包内容非法')
-            plugin_dir_name = plugin_namelist[0].split('/', 1)[0].strip()
-            if not plugin_dir_name:
-                raise errors.RequestError(msg='插件压缩包内容非法')
-            if (
-                len(plugin_namelist) <= 3
-                or f'{plugin_dir_name}/plugin.toml' not in plugin_namelist
-                or f'{plugin_dir_name}/README.md' not in plugin_namelist
-            ):
-                raise errors.RequestError(msg='插件压缩包内缺少必要文件')
+        full_plugin_path = anyio.Path(PLUGIN_DIR / plugin_name)
+        if await full_plugin_path.exists():
+            raise errors.ConflictError(msg='此插件已安装')
 
-            # 插件是否可安装
-            plugin_name_match = re.match(
-                r'^([a-zA-Z0-9_]+)',
-                file.split(os.sep)[-1].split('.')[0].strip()
-                if isinstance(file, str)
-                else file.filename.split('.')[0].strip(),
-            )
-            if not plugin_name_match:
-                raise errors.RequestError(msg='插件压缩包文件名非法')
-            plugin_name = plugin_name_match.group()
-            full_plugin_path = anyio.Path(PLUGIN_DIR / plugin_name)
-            if await full_plugin_path.exists():
-                raise errors.ConflictError(msg='此插件已安装')
-
-            # 解压（安装）
-            members = []
-            prefix = f'{plugin_dir_name}/'
-            for member in zf.infolist():
-                if member.filename in {plugin_dir_name, prefix}:
-                    continue
-                if not member.filename.startswith(prefix):
-                    continue
-
-                relative_filename = member.filename.removeprefix(prefix)
-                if not relative_filename:
-                    if member.is_dir():
-                        continue
-                    raise errors.RequestError(msg='插件压缩包内容非法')
-
-                member.filename = relative_filename
-                members.append(member)
-
-            if not members:
-                raise errors.RequestError(msg='插件压缩包内容非法')
-
+        # 解压（安装）
+        with zipfile.ZipFile(io.BytesIO(contents)) as zf:
+            members = _collect_zip_plugin_members(zf, plugin_dir_name)
             await full_plugin_path.mkdir(parents=True, exist_ok=True)
             await run_in_threadpool(zf.extractall, full_plugin_path, members)
 
@@ -135,10 +173,7 @@ async def install_git_plugin(repo_url: str) -> str:
     :param repo_url:
     :return:
     """
-    match = is_git_url(repo_url)
-    if not match:
-        raise errors.RequestError(msg='Git 仓库地址格式非法，仅支持 HTTP/HTTPS 协议')
-    repo_name = match.group('repo')
+    repo_name = validate_git_repo_url(repo_url)
     path = anyio.Path(PLUGIN_DIR / repo_name)
     if await path.exists():
         raise errors.ConflictError(msg=f'{repo_name} 插件已安装')

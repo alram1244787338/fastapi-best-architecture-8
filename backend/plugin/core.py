@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 
 from functools import lru_cache
 from typing import Any
@@ -100,6 +101,28 @@ def load_plugin_config(plugin: str) -> dict[str, Any]:
 
     with open(toml_path, encoding='utf-8') as f:
         return rtoml.load(f)
+
+
+def get_plugin_readme(plugin: str) -> str | None:
+    """
+    读取插件目录下的 README 描述内容（若存在）
+
+    :param plugin: 插件名称
+    :return:
+    """
+    plugin_path = PLUGIN_DIR / plugin
+    for filename in ('README.md', 'README.MD', 'readme.md', 'Readme.md', 'README'):
+        readme_path = plugin_path / filename
+        if not os.path.isfile(readme_path):
+            continue
+        try:
+            content = pathlib.Path(readme_path).read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError) as e:
+            log.warning(f'读取插件 {plugin} 的 {filename} 失败: {e}')
+            return None
+        else:
+            return content
+    return None
 
 
 def parse_plugin_config() -> tuple[list[PluginEntry], list[PluginEntry]]:
